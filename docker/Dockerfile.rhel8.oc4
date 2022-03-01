@@ -1,4 +1,4 @@
-FROM image-registry.openshift-image-registry.svc:5000/oai-public/jenkins@sha256:f60b2260f023d4d14c8f0ff0b983645ddec68a94b7caedb7b66a52e3260ebd3a as jenkins
+FROM image-registry.openshift-image-registry.svc:5000/openshift/jenkins@sha256:c021bef6332f46b18113ec5f32cd37124122a2ea26fe7584f9eab628708152d1 as jenkins
 
 USER root
 COPY ./docker/run /usr/libexec/s2i/run
@@ -6,7 +6,8 @@ COPY ./docker/run /usr/libexec/s2i/run
 WORKDIR /usr/lib/jenkins/
 RUN ls -lst jenkins.war && \
     rm -f jenkins.war && \
-    wget --retry-connrefused -t 3 --no-check-certificate https://updates.jenkins.io/download/war/2.319.2/jenkins.war && \
+    VERSION=$(curl https://get.jenkins.io/war-stable/ 2>&1 | grep  -o '[0-9]\.[0-9][0-9][0-9]\.[0-9]' | head -1)j=$(curl https://get.jenkins.io/war-stable/ 2>&1 | grep  -o '[0-9]\.[0-9][0-9][0-9]\.[0-9]' | head -1) \
+    wget --retry-connrefused -t 3 --no-check-certificate https://get.jenkins.io/war-stable/$VERSION/jenkins.war && \
     ls -lst jenkins.war
 
 VOLUME ["/var/lib/jenkins"]

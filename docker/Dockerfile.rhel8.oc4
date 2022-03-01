@@ -1,0 +1,15 @@
+FROM image-registry.openshift-image-registry.svc:5000/oai-public/jenkins@sha256:f60b2260f023d4d14c8f0ff0b983645ddec68a94b7caedb7b66a52e3260ebd3a as jenkins
+
+USER root
+COPY ./docker/run /usr/libexec/s2i/run
+
+WORKDIR /usr/lib/jenkins/
+RUN ls -lst jenkins.war && \
+    rm -f jenkins.war && \
+    wget --retry-connrefused -t 3 --no-check-certificate https://updates.jenkins.io/download/war/2.319.2/jenkins.war && \
+    ls -lst jenkins.war
+
+VOLUME ["/var/lib/jenkins"]
+
+USER 1001
+ENTRYPOINT ["/usr/bin/go-init", "-main", "/usr/libexec/s2i/run"]

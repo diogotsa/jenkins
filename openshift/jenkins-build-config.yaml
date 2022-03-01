@@ -1,0 +1,20 @@
+kind: BuildConfig
+apiVersion: build.openshift.io/v1
+metadata:
+    name: "jenkins-build-config"
+spec:
+    runPolicy: "Serial"
+    source:
+        git:
+            uri: "https://gitlab.eurecom.fr/oai/openair-ci-sandbox.git"
+            ref: "jenkins-image-maintenance"
+            httpProxy: http://proxy.eurecom.fr:8080
+            httpsProxy: https://proxy.eurecom.fr:8080
+    strategy:
+        dockerStrategy:
+            dockerfilePath: "docker/Dockerfile.rhel8.oc4"
+    output:
+        to:
+            kind: "ImageStreamTag"
+            name: "jenkins:2.319.2"
+

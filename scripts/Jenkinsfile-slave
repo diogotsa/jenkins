@@ -1,0 +1,85 @@
+#!/bin/groovy
+
+pipeline {
+    agent {
+        label 'orion'
+    }
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+    }
+    stages {
+        stage ("Verify") {
+            steps {
+                script {
+                    def allParametersPresent = true
+                    echo params.eNB_IPaddress
+                    if (params.eNB_Repository == null) {
+                        echo "missing git url parameter"
+                        allParametersPresent = false
+                    } else {
+                        echo params.eNB_Repository
+                    }
+                    if (params.eNB_Branch == null) {
+                        echo "missing git branch parameter"
+                        allParametersPresent = false
+                    } else {
+                        echo params.eNB_Branch
+                    }
+                    if (params.eNB_CommitID == null) {
+                        echo "missing git commit parameter"
+                        allParametersPresent = false
+                    } else {
+                        echo params.eNB_CommitID
+                    }
+                    if (params.eNB_manageMergeRequest == null) {
+                        echo "missing gitlab merge request manage boolean parameter"
+                        allParametersPresent = false
+                    } else {
+                        if (params.eNB_manageMergeRequest) {
+                            echo "Slave job manages GitLab merge process"
+                        } else {
+                            echo "Slave job DO NOT manage GitLab merge process"
+                        }
+                    }
+                    if (params.eNB_jobIsAMergeRequest == null) {
+                        echo "missing gitlab job merge request boolean parameter"
+                        allParametersPresent = false
+                    } else {
+                        if (params.eNB_jobIsAMergeRequest) {
+                            echo "Master Job was triggered by a merge request"
+                        } else {
+                            echo "Master Job was triggered by a push to target branch"
+                        }
+                    }
+                    if (allParametersPresent) {
+                        echo "All parameters are present"
+                        //deleteDir()
+                        //sh "git clone  ${params.eNB_Repository}"
+                        //sh "cd openair-ci-sandbox; git checkout -f ${params.eNB_CommitID}"
+                    } else {
+                        echo "Some parameters are missing"
+                    }
+                    sh "echo ${JOB_NAME} > test-result.txt"
+                    sh "echo ${BUILD_ID} >> test-result.txt"
+                    sh "echo ${NODE_NAME} >> test-result.txt"
+                    if (fileExists('test-result.txt')) {
+                        archiveArtifacts artifacts: 'test-result.txt'
+                    }
+                }
+            }
+        }
+        stage ("Build") {
+            steps {
+                echo "Build Stage is OK"
+            }
+        }
+        stage ("Test") {
+            steps {
+                echo "Test Stage is OK"
+                //echo "Test Stage is KO"
+                //sh "sh scripts/fail.sh"
+            }
+        }
+    }
+}

@@ -1,0 +1,276 @@
+#!/bin/groovy
+// Comments
+// author raphael defosseux
+// date 2018-07-17
+// copyright oai
+//
+def TERMINATE_STATUS
+
+// Abstraction function to send social media messages:
+// like on Slack or Mattermost
+def sendSocialMediaMessage(pipeChannel, pipeColor, pipeMessage) {
+    if (params.pipelineUsesSlack != null) {
+        if (params.pipelineUsesSlack) {
+            slackSend channel: pipeChannel, color: pipeColor, message: pipeMessage
+        }
+    }
+}
+
+def gitCommitAuthorEmailAddr
+def BUILD_STAGE_ID = 0
+def TEST_STAGE_ID = 1
+def SLAVE_JOB_STAGE_ID = 2
+def NB_STAGES = SLAVE_JOB_STAGE_ID + 1
+def pipelineStateStatusArray = new Boolean[NB_STAGES]
+
+pipeline {
+    agent {
+        label 'carabe'
+    }
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        gitLabConnection('OAI GitLab')
+        gitlabBuilds(builds: ["Build", "Test", "Slave-Test"])
+        lock(extra: [[resource: 'CI-Dummy-2']], resource: 'CI-Dummy-1')
+    }
+
+    stages {
+        stage ("Verify Parameters") {
+            steps {
+                echo 'Verify Parameters'
+                //echo "Base URL        is ${JENKINS_URL}"
+                echo "Git URL         is ${GIT_URL}"
+                echo "GitLab Act      is ${env.gitlabActionType}"
+                script {
+                    for (int i = 0; i < NB_STAGES; i++) {
+                        pipelineStateStatusArray[i] = false
+                    }
+                    JOB_TIMESTAMP = sh returnStdout: true, script: 'date --utc --rfc-3339=seconds | sed -e "s#+00:00##"'
+                    JOB_TIMESTAMP = JOB_TIMESTAMP.trim()
+                    echo "JOB_TIMESTAMP   is ${JOB_TIMESTAMP}"
+                    sh "git clean -x -d -ff"
+                    TERMINATE_STATUS = 'todo'
+                    echo "TERMINATE       is ${TERMINATE_STATUS}"
+                    if ("MERGE".equals(env.gitlabActionType)) {
+                        gitCommitAuthorEmailAddr = env.gitlabUserEmail
+                        echo "GitLab Usermail is ${gitCommitAuthorEmailAddr}"
+                        //echo "GitLab src branch is ${env.gitlabSourceBranch}"
+                        //echo "GitLab tar branch is ${env.gitlabTargetBranch}"
+                        //echo "Git Last Commit is ${env.gitlabMergeRequestLastCommit}"
+                        // GitLab-Jenkins pugin integration is lacking to perform the merge by itself
+                        // Doing it manually --> it may have merge conflicts
+                        sh "./scripts/doGitLabMerge.sh ${env.gitlabSourceBranch} ${env.gitlabMergeRequestLastCommit} ${env.gitlabTargetBranch} ${GIT_COMMIT}"
+                        sh "./scripts/checkCodingFormattingRules.sh ${env.gitlabSourceBranch} ${env.gitlabTargetBranch}"
+                        def res=readFile('./oai_rules_result.txt').trim();
+                        if ("0".equals(res)) {
+                            addGitLabMRComment comment: "All Changed files in Merge Request follow OAI Formatting Rules"
+                        } else {
+                            def fileList=readFile('./oai_warning_files_list.txt').trim();
+                            addGitLabMRComment comment: "Some Changed files in Merge Request DO NOT follow OAI Formatting Rules (" + fileList + ")"
+                        }
+                    } else {
+                        echo "Git Branch      is ${GIT_BRANCH}"
+                        echo "Git Commit      is ${GIT_COMMIT}"
+                        gitCommitAuthorEmailAddr = sh returnStdout: true, script: 'git log -n1 --pretty=format:%ae ${GIT_COMMIT}'
+                        echo "GitLab Usermail is ${gitCommitAuthorEmailAddr}"
+                        sh "./scripts/checkCodingFormattingRules.sh"
+                    }
+                    // xmlTestSuite should be a list of XML files to execute
+                    if (params.xmlTestSuite != null) {
+                        String[] myXmlTestSuite = params.xmlTestSuite.split("\\r?\\n")
+                        def xmlField = ""
+                        for (xmlFile in myXmlTestSuite) {
+                            xmlField += "--XMLTestFile=" + xmlFile + " "
+                        }
+                        echo "Calling with $xmlField"
+                        for (xmlFile in myXmlTestSuite) {
+                            echo "XML FILE      is $xmlFile"
+                        }
+                    }
+                }
+            }
+        }
+        stage ("Build") {
+            steps {
+                gitlabCommitStatus(name: "Build") {
+                    sh "gcc src/test1.c -I./include -o bin/test1"
+                    sh "gcc src/test2.c -I./include -o bin/test2"
+                    sh "gcc src/test2.c -I./include -o bin/test3"
+                    sh "cppcheck --enable=warning --force --xml --xml-version=2 src 2> cppcheck.xml"
+                }
+            }
+            post {
+                success {
+                    script {
+                        pipelineStateStatusArray[BUILD_STAGE_ID] = true
+                    }
+                }
+                always {
+                    script {
+                        TERMINATE_STATUS = 'done'
+                    }
+                }
+            }
+        }
+        stage ("Test") {
+            steps {
+                script {
+                    try {
+                        gitlabCommitStatus(name: "Test") {
+                            sh "./bin/test1"
+                            sh "./bin/test2"
+                            sh "./bin/test3"
+                            echo "TERMINATE       is ${TERMINATE_STATUS}"
+                            sh "sed -e 's#TEMPLATE_JOB_NAME#${JOB_NAME}#g' -e 's#TEMPLATE_BUILD_ID#${BUILD_ID}#g' -e 's#TEMPLATE_GIT_URL#${GIT_URL}#g' -e 's#TEMPLATE_GIT_BRANCH#${GIT_BRANCH}#g' -e 's#TEMPLATE_GIT_COMMIT#${GIT_COMMIT}#g' -e 's#TEMPLATE_JOB_TIMESTAMP#${JOB_TIMESTAMP}#g' scripts/template_results.html > test_results.html"
+                        }
+                    } catch (Exception e) {
+                        currentBuild.result = 'FAILURE'
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        pipelineStateStatusArray[TEST_STAGE_ID] = true
+                    }
+                }
+            }
+        }
+        stage ("Test slave job") {
+            steps {
+                script {
+                    triggerSlaveJob ('CI-Sandbox4-slave', 'Slave-Test')
+                }
+            }
+            post {
+                success {
+                    script {
+                        finalizeSlaveJob ('CI-Sandbox4-slave')
+                        pipelineStateStatusArray[SLAVE_JOB_STAGE_ID] = true
+                    }
+                }
+                cleanup {
+                    script {
+                        if (!fileExists('test-result.txt')) {
+                            finalizeSlaveJob ('CI-Sandbox4-slave')
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                if(fileExists('cppcheck.xml')) {
+                    archiveArtifacts artifacts: 'cppcheck.xml'
+                }
+                if(fileExists('test_results.html')) {
+                    archiveArtifacts artifacts: 'test_results.html'
+                }
+                //sendEmailToContributor(pipelineStateStatusArray, NB_STAGES, gitCommitAuthorEmailAddr)
+            }
+        }
+        success {
+            script {
+                def message = "OAI build #" + BUILD_ID + " passed (" + BUILD_URL + ")"
+                if ("MERGE".equals(env.gitlabActionType)) {
+                    addGitLabMRComment comment: message
+                    def message2 = "OAI build #" + BUILD_ID + " passed (" + BUILD_URL + ") -- MergeRequest #" + env.gitlabMergeRequestIid + " (" + env.gitlabMergeRequestTitle + ")"
+                    sendSocialMediaMessage('sandbox', 'good', message2)
+                } else {
+                    sendSocialMediaMessage('sandbox', 'good', message)
+                }
+            }
+        }
+        failure {
+            script {
+                def message = "OAI build #" + BUILD_ID + " failed (" + BUILD_URL + ")"
+                if ("MERGE".equals(env.gitlabActionType)) {
+                    addGitLabMRComment comment: message
+                    def message2 = "OAI build #" + BUILD_ID + " failed (" + BUILD_URL + ") -- MergeRequest #" + env.gitlabMergeRequestIid + " (" + env.gitlabMergeRequestTitle + ")"
+                    sendSocialMediaMessage('sandbox', 'danger', message2)
+                } else {
+                    sendSocialMediaMessage('sandbox', 'danger', message)
+                }
+            }
+        }
+    }
+}
+
+def triggerSlaveJob (jobName, gitlabStatusName) {
+    if ("MERGE".equals(env.gitlabActionType)) {
+        echo "Triggering slave job in MR case"
+    } else {
+        echo "Triggering slave job in PUSH case"
+    }
+    localStatus = build job: jobName,
+        parameters: [
+            string(name: 'eNB_Repository', value: String.valueOf(GIT_URL)),
+            string(name: 'eNB_Branch', value: String.valueOf(GIT_BRANCH)),
+            string(name: 'eNB_CommitID', value: String.valueOf(GIT_COMMIT)),
+            booleanParam(name: 'eNB_manageMergeRequest', value: Boolean.valueOf(params.eNB_manageMergeRequest)),
+            booleanParam(name: 'eNB_jobIsAMergeRequest', value: "MERGE".equals(env.gitlabActionType))
+        ], propagate: false
+    localResult = localStatus.getResult()
+    echo "localStatus of build is ${localResult}"
+    gitlabCommitStatus(name: gitlabStatusName) {
+        if (localStatus.resultIsBetterOrEqualTo('SUCCESS')) {
+           echo "Slave Job is OK"
+        } else {
+           echo "Slave Job is KO"
+           sh "scripts/fail.sh"
+        }
+    }
+}
+
+def finalizeSlaveJob (jobName) {
+    copyArtifacts(projectName: jobName, filter: "test-result*.txt", selector: lastCompleted())
+    if (fileExists('test-result.txt')) {
+        archiveArtifacts artifacts: 'test-result.txt'
+    }
+}
+
+def sendEmailToContributor (stageStatuses, maxStages, toMailAddr) {
+    def header = false
+    def bodyMsg = '''Hi,
+
+'''
+    for (int i = 0; i < maxStages; i++) {
+        if (!stageStatuses[i]) {
+            if (!header) {
+                bodyMsg +=  '''Stages that did fail:
+'''
+                header = true
+            }
+        }
+        switch (i) {
+        case BUILD_STAGE_ID:
+            bodyMsg +=  '''  -- Build Stage
+'''
+            break;
+        case TEST_STAGE_ID:
+            bodyMsg +=  '''  -- Test Stage
+'''
+            break;
+        case SLAVE_JOB_STAGE_ID:
+            bodyMsg +=  '''  -- Slave Job Stage
+'''
+            break;
+        default:
+            break;
+        }
+    }
+    bodyMsg += '''
+
+Here are attached HTML report files for $PROJECT_NAME - Build # $BUILD_NUMBER
+
+Regards,
+OAI CI Team'''
+    emailext attachmentsPattern: 'cppcheck.xml,test-result*.txt',
+                     body: bodyMsg,
+                     replyTo: 'no-reply@openairinterface.org',
+                     subject: '$PROJECT_NAME - Build # $BUILD_NUMBER - $BUILD_STATUS!',
+                     to: toMailAddr
+}
